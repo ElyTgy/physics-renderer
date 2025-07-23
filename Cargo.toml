@@ -27,3 +27,20 @@ crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 strip = true
+
+[package.metadata.wasm-pack.profile.release]     # release builds (default)
+wasm-opt = [
+  "-O",                      # optimisation level
+  "--enable-bulk-memory",    # accept bulk-memory feature
+  "--enable-bulk-memory-opt", # accept memory.copy/fill ops
+  "--enable-nontrapping-float-to-int"  
+]
+
+[package.metadata.wasm-pack.profile.dev]         # optional, for `--dev`
+wasm-opt = [
+  "-O",
+  "--enable-bulk-memory",
+  "--enable-bulk-memory-opt",
+  "--enable-nontrapping-float-to-int"     # ← NEW
+
+]
