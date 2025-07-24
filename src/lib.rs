@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 use winit::{
     application::ApplicationHandler, event::*, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::Window
@@ -6,6 +7,43 @@ use winit::{
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+
+#[repr(C)] //layout the struct in memory how a C compiler would ->
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3], //syntax for making arrays of type f32 with a compile length of 3
+    color: [f32; 3],
+}
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout{
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress, //array_stride says how big the vertex is. When the shader goes to read the next vertex, it will skip over the array_stride number of bytes
+            step_mode: wgpu::VertexStepMode::Vertex, //here for stepmode it defines that each element in array represents pre-vertex data and not pre-instance 
+            //these attributes usually correspond to the member variables in the Vertex struct
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0, //for the first attribute, offset is zero, and later attributes will have sum of size_of of the previous' data
+                    shader_location: 0, //saying that this attribute corresponds to location of 0 in shaders -> telling the gpu how position and color are mapped in shaders
+                    format: wgpu::VertexFormat::Float32x3, // 6.tells the shader the shape of the attribute. Float32x3 corresponds to vec3<f32> in shader code. 
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3
+                }
+            ]
+        }
+    }
+}
+
+//data that make up the triangle
+//vetex data laid out in ccw order bc earlier we talked about having the front_face to be ccw -> with this data we have the traingle facing us
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },
+];
 
 // This will store the state of our game
 pub struct State {
@@ -15,6 +53,8 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    num_vertices: u32,
     window: Arc<Window>,
 }
 
@@ -23,6 +63,7 @@ impl State {
     // but we will in the next tutorial
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let size = window.inner_size();
+        let num_vertices = VERTICES.len() as u32;
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             #[cfg(not(target_arch = "wasm32"))]
@@ -94,7 +135,9 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[
+                    Vertex::desc(),
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState { // 3.
@@ -130,6 +173,14 @@ impl State {
             cache: None, // 6.
         });
 
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor { //used for describing a buffer when allocating
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES), //contents of a buffer on creation
+                usage: wgpu::BufferUsages::VERTEX, //usages. if buffer used in a way not specified here the code will panic
+            }
+        );
+
         Ok(Self {
             surface,
             device,
@@ -137,6 +188,8 @@ impl State {
             config,
             is_surface_configured: false,
             render_pipeline,
+            vertex_buffer,
+            num_vertices,
             window,
         })
     }
@@ -200,7 +253,8 @@ impl State {
 
             //for working with the shaders and the pipeline
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw(0..3, 0..1); // tell wgpu to draw sth with 3 vertices and 1 instance -> uses @builtin(vertex_index)
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.draw(0..self.num_vertices, 0..1); // tell wgpu to draw sth with the number of vertices you have vertices and 1 instance -> uses @builtin(vertex_index)
         }
 
         //enocder.finish() ends the CommandEncoder and returns a CommandBuffer, ready to be passed on to the GPU
