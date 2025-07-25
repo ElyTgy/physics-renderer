@@ -40,9 +40,18 @@ impl Vertex {
 //data that make up the triangle
 //vetex data laid out in ccw order bc earlier we talked about having the front_face to be ccw -> with this data we have the traingle facing us
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
-    Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.5, 0.0, 0.5] }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.5, 0.0, 0.5] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.5, 0.0, 0.5] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.5, 0.0, 0.5] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 0.0, 0.5] }, // E
+];
+
+//using index buffers to save on memory -> save us having to keep track of duplicate data. You only need to map the order that the vertices appear in. 
+const INDICES: &[u16] = &[
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
 ];
 
 // This will store the state of our game
@@ -55,6 +64,8 @@ pub struct State {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     num_vertices: u32,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
     window: Arc<Window>,
 }
 
@@ -181,6 +192,15 @@ impl State {
             }
         );
 
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor{
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            }
+        );
+        let num_indices = INDICES.len() as u32;
+
         Ok(Self {
             surface,
             device,
@@ -189,6 +209,8 @@ impl State {
             is_surface_configured: false,
             render_pipeline,
             vertex_buffer,
+            index_buffer,
+            num_indices,
             num_vertices,
             window,
         })
@@ -254,7 +276,9 @@ impl State {
             //for working with the shaders and the pipeline
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.num_vertices, 0..1); // tell wgpu to draw sth with the number of vertices you have vertices and 1 instance -> uses @builtin(vertex_index)
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            //changed this function from draw to draw_indexed since the draw function itself ignore index buffers
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1); // tell wgpu to draw sth with the number of vertices you have vertices and 1 instance -> uses @builtin(vertex_index)
         }
 
         //enocder.finish() ends the CommandEncoder and returns a CommandBuffer, ready to be passed on to the GPU
