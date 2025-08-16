@@ -1,13 +1,12 @@
-- fix camera
-    - starting position -> working
-    - w or up arrow should move forward (in the direction of the axis that the camera is pointing)
-    - s or down arrow should zoom out (in the direction of the axis that the camera is pointing)
-    - a or left arrow should move the camera to the left
-    - d or right arrow should move the camera to the right
-    - left click and moving the mouse should change where the camera is pointing
+- ✅ fix camera (COMPLETED - Keyboard only)
+    - ✅ w or up arrow should move forward (in the direction of the axis that the camera is pointing)
+    - ✅ s or down arrow should move backward (in the direction of the axis that the camera is pointing)
+    - ✅ a or left arrow should move the camera to the left
+    - ✅ d or right arrow should move the camera to the right
+    - ❌ left click and moving the mouse should change where the camera is pointing (REMOVED for now)
+    - ✅ added R key to reset camera orientation
 - render ground
 - add a gui
     - gravity
     - add and remove objects
     - change the size of objects
-    - 

@@ -3,9 +3,9 @@ use wgpu::util::DeviceExt;
 use winit::{
     event::*, event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window
 };
-use cgmath::prelude::*;
 
-use crate::camera::{Camera, CameraController, CameraUniform};
+
+use crate::camera::{CameraSystem, Instance};
 use crate::texture::Texture;
 use crate::model::{Model, ModelVertex, DrawModel, Vertex as ModelVertexTrait};
 use crate::resources;
@@ -13,11 +13,7 @@ use crate::physics::PhysicsWorld;
 use rapier3d::prelude::RigidBodyHandle;
 
 
-// Instance struct to hold position and rotation data
-struct Instance {
-    position: cgmath::Vector3<f32>,
-    rotation: cgmath::Quaternion<f32>,
-}
+// Instance struct moved to camera.rs for camera positioning calculations
 
 // Raw instance data that goes into the GPU buffer
 #[repr(C)]
@@ -88,11 +84,7 @@ pub struct State {
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     obj_model: Model,
-    camera: Camera,
-    camera_controller: CameraController,
-    camera_uniform: CameraUniform,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    camera_system: CameraSystem,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: Texture,
     depth_texture: Texture,
@@ -102,74 +94,17 @@ pub struct State {
 }
 
 impl State {
-    // Add this method to calculate the center of all instances
-    fn calculate_instances_center(&self) -> cgmath::Point3<f32> {
-        if self.instances.is_empty() {
-            // If no instances, return origin
-            return cgmath::Point3::new(0.0, 0.0, 0.0);
-        }
-
-        let mut min_x = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-        let mut min_z = f32::INFINITY;
-        let mut max_z = f32::NEG_INFINITY;
-
-        // Find the bounding box of all instances
-        //Note that if there 
-        for instance in &self.instances {
-            min_x = min_x.min(instance.position.x);
-            max_x = max_x.max(instance.position.x);
-            min_y = min_y.min(instance.position.y);
-            max_y = max_y.max(instance.position.y);
-            min_z = min_z.min(instance.position.z);
-            max_z = max_z.max(instance.position.z);
-        }
-
-        // Calculate center (ignore z for camera positioning as requested)
-        let center_x = (min_x + max_x) / 2.0;
-        let center_y = (min_y + max_y) / 2.0;
-        let center_z = 10.0; // Set to ground level as requested
-
-        cgmath::Point3::new(center_x, center_y, center_z)
-    }
+    // Camera positioning methods moved to CameraSystem in camera.rs
 
     // Add this method to position camera looking at instances center
     fn position_camera_at_instances_center(&mut self) {
-        let center = self.calculate_instances_center();
-        
-        // Calculate the largest magnitude for x,y to determine camera distance
-        let max_magnitude = self.instances.iter()
-            .map(|instance| {
-                let dx = (instance.position.x - center.x).abs();
-                let dy = (instance.position.y - center.y).abs();
-                dx.max(dy)
-            })
-            .fold(0.0, f32::max);
-
-        // Set camera position: offset from center with appropriate height
-        let camera_distance = (max_magnitude * 3.0).max(5.0); // At least 5 units away
-        let camera_height = 3.0; // Fixed height above ground
-        
-        self.camera.set_eye(cgmath::Point3::new(
-            center.x,
-            center.y + camera_height,
-            center.z + camera_distance
-        ));
-        
-        // Set target to the center
-        self.camera.set_target(center);
-        
-        // Update camera uniform
-        self.camera_uniform.update_view_proj(&self.camera);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        self.camera_system.position_camera_at_instances_center(&self.instances, &self.queue);
     }
 
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let size = window.inner_size();
 
-        let camera_controller = CameraController::new(0.01); // Much smaller speed
+        // Camera system will be created later in the initialization
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             #[cfg(not(target_arch = "wasm32"))]
@@ -237,51 +172,8 @@ impl State {
         });
 
         //TODO: change this so that the camera's initial target is towards the center of all instances (i.e. get the largest magnitude of x,y,z which would make an imaginery cube, and then set the camera to look at the center of that BUT ignore the z that comes out of this, and set the z an appropriate height above the ground)
-        // Initialize camera to look at the first physics instance 
-        let mut camera = Camera::new();
-        // Point camera towards the first physics instance at (-4, 35, -4)
-        let target_position = cgmath::Point3::new(-4.0, 35.0, -4.0);
-        camera.set_target(target_position);
-        // Position camera slightly offset from the target
-        camera.set_eye(cgmath::Point3::new(-6.0, 37.0, -6.0));
-
-        let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(&camera);
-
-        let camera_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Camera Buffer"),
-                contents: bytemuck::cast_slice(&[camera_uniform]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }
-        );
-
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ],
-            label: Some("camera_bind_group_layout"),
-        });
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                }
-            ],
-            label: Some("camera_bind_group"),
-        });
+        // Initialize camera system with default settings
+        let camera_system = CameraSystem::new(&device);
 
         // Create texture bind group layout
         let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -329,7 +221,7 @@ impl State {
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[
-                &camera_bind_group_layout,
+                camera_system.bind_group_layout(),
                 &texture_bind_group_layout,
             ],
             push_constant_ranges: &[],
@@ -435,7 +327,7 @@ impl State {
             for x in 0..2 {
                 let position = cgmath::Vector3::new(
                     x as f32 * 2.0 - 4.0,
-                    10.0, // Start above ground
+                    0.0, // Start above ground
                     z as f32 * 2.0 - 4.0
                 );
                 let handle = physics_world.add_cube(position, 1.0);
@@ -457,11 +349,7 @@ impl State {
             instances,
             instance_buffer,
             obj_model,
-            camera,
-            camera_controller,
-            camera_uniform,
-            camera_buffer,
-            camera_bind_group,
+            camera_system,
             diffuse_bind_group,
             diffuse_texture,
             depth_texture,
@@ -500,7 +388,7 @@ impl State {
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        self.camera_controller.process_events(event)
+        self.camera_system.input(event)
     }
 
 
@@ -513,7 +401,7 @@ impl State {
         if width > 0 && height > 0 {
             self.config.width = width;
             self.config.height = height;
-            self.camera.update_aspect(width, height);
+            self.camera_system.update_aspect(width, height);
             self.surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
             
@@ -532,10 +420,8 @@ impl State {
         // Update instances based on physics bodies
         self.update_instances_from_physics();
         
-        // Update camera
-        self.camera_controller.update_camera(&mut self.camera);
-        self.camera_uniform.update_view_proj(&self.camera);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        // Update camera system
+        self.camera_system.update(&self.queue);
     }   
     
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -589,7 +475,7 @@ impl State {
             //for working with the shaders and the pipeline
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.draw_model_instanced(&self.obj_model, 0..self.instances.len() as u32, &self.camera_bind_group);
+            render_pass.draw_model_instanced(&self.obj_model, 0..self.instances.len() as u32, self.camera_system.bind_group());
         }
 
         //encoder.finish() ends the CommandEncoder and returns a CommandBuffer, ready to be passed on to the GPU

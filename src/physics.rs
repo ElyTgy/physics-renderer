@@ -93,7 +93,7 @@ impl PhysicsWorld {
     }
 
     /// Step the physics simulation
-    pub fn step(&mut self, delta_time: f32) {
+    pub fn step(&mut self, _delta_time: f32) {
         // Create a physics hooks object
         let physics_hooks = ();
         let event_handler = ();

@@ -1,6 +1,6 @@
-use cgmath;
-
+use cgmath::{self, InnerSpace};
 use bytemuck;
+use wgpu::util::DeviceExt;
 
 #[cfg(target_arch = "wasm32")]
 use web_sys::console;
@@ -96,6 +96,10 @@ impl Camera {
     pub fn set_target(&mut self, target: cgmath::Point3<f32>) {
         self.target = target;
     }
+
+    pub fn set_up(&mut self, up: cgmath::Vector3<f32>) {
+        self.up = up;
+    }
 }
 
 // We need this for Rust to store our data correctly for the shaders
@@ -132,6 +136,9 @@ pub struct CameraController {
     is_backward_pressed: bool,
     is_left_pressed: bool,
     is_right_pressed: bool,
+    // Camera orientation
+    yaw: f32,   // Horizontal rotation (left/right)
+    pitch: f32, // Vertical rotation (up/down)
 }
 
 impl CameraController {
@@ -142,6 +149,8 @@ impl CameraController {
             is_backward_pressed: false,
             is_left_pressed: false,
             is_right_pressed: false,
+            yaw: -90.0, // Start looking along negative z-axis
+            pitch: 0.0,
         }
     }
 
@@ -174,6 +183,12 @@ impl CameraController {
                         self.is_right_pressed = is_pressed;
                         true
                     }
+                    winit::keyboard::KeyCode::KeyR => {
+                        if is_pressed {
+                            self.reset_orientation();
+                        }
+                        true
+                    }
                     _ => false,
                 }
             }
@@ -182,42 +197,249 @@ impl CameraController {
     }
 
     pub fn update_camera(&self, camera: &mut Camera) {
-        use cgmath::InnerSpace;
+        use cgmath::{InnerSpace, Rad, Deg};
         
-        //console::log_1(&format!("Camera position before: {:?}", camera.eye).into());
+        // Calculate camera direction from yaw and pitch
+        let yaw_rad = cgmath::Rad::from(cgmath::Deg(self.yaw));
+        let pitch_rad = cgmath::Rad::from(cgmath::Deg(self.pitch));
         
-        // Calculate the forward direction (from eye to target)
-        let forward = camera.get_target() - camera.get_eye();
-        let forward_norm = forward.normalize();
-        let forward_mag = forward.magnitude();
-
-        // Calculate the right direction (perpendicular to forward and up)
-        let right = forward_norm.cross(camera.get_up());
-
-        // Handle forward/backward movement
+        // Calculate forward direction
+        let forward_x = yaw_rad.0.cos() * pitch_rad.0.cos();
+        let forward_y = pitch_rad.0.sin();
+        let forward_z = yaw_rad.0.sin() * pitch_rad.0.cos();
+        
+        let forward = cgmath::Vector3::new(forward_x, forward_y, forward_z).normalize();
+        
+        // Calculate right direction (perpendicular to forward and up)
+        let up = cgmath::Vector3::unit_y();
+        let right = forward.cross(up).normalize();
+        
+        // Calculate up direction (perpendicular to forward and right)
+        let camera_up = right.cross(forward).normalize();
+        
+        // Update camera position based on input
+        let mut new_eye = camera.get_eye();
+        
         if self.is_forward_pressed {
-            camera.set_eye(camera.get_eye() + forward_norm * self.speed);
-            #[cfg(target_arch = "wasm32")]
-            console::log_1(&"MOVING FORWARD".into());
+            new_eye += forward * self.speed;
         }
         if self.is_backward_pressed {
-            camera.set_eye(camera.get_eye() - forward_norm * self.speed);
-            #[cfg(target_arch = "wasm32")]
-            console::log_1(&"MOVING BACKWARD".into());
+            new_eye -= forward * self.speed;
         }
-
-        // Handle left/right movement (strafe)
         if self.is_right_pressed {
-            camera.set_eye(camera.get_eye() + right * self.speed);
-            #[cfg(target_arch = "wasm32")]
-            console::log_1(&"MOVING RIGHT".into());
+            new_eye += right * self.speed;
         }
         if self.is_left_pressed {
-            camera.set_eye(camera.get_eye() - right * self.speed);
-            #[cfg(target_arch = "wasm32")]
-            console::log_1(&"MOVING LEFT".into());
+            new_eye -= right * self.speed;
+        }
+        
+        // Update camera
+        camera.set_eye(new_eye);
+        camera.set_target(new_eye + forward);
+        camera.set_up(camera_up);
+    }
+
+    pub fn reset_orientation(&mut self) {
+        self.yaw = -90.0;
+        self.pitch = 0.0;
+    }
+}
+
+/// Camera system that manages camera positioning, uniforms, and GPU resources
+/// This encapsulates all camera-related functionality that was previously in the renderer
+pub struct CameraSystem {
+    pub camera: Camera,
+    pub camera_controller: CameraController,
+    pub camera_uniform: CameraUniform,
+    pub camera_buffer: wgpu::Buffer,
+    pub camera_bind_group: wgpu::BindGroup,
+    pub camera_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl CameraSystem {
+    /// Create a new camera system with default settings
+    pub fn new(device: &wgpu::Device) -> Self {
+        let mut camera_controller = CameraController::new(0.1); // Increased speed for better responsiveness
+        
+        // Initialize camera with proper orientation
+        let mut camera = Camera::new();
+        
+        // Set initial camera position and orientation
+        let initial_position = cgmath::Point3::new(-6.0, 37.0, -6.0);
+        camera.set_eye(initial_position);
+        
+        // Calculate initial target based on yaw and pitch
+        let yaw_rad = cgmath::Rad::from(cgmath::Deg(camera_controller.yaw));
+        let pitch_rad = cgmath::Rad::from(cgmath::Deg(camera_controller.pitch));
+        
+        let forward_x = yaw_rad.0.cos() * pitch_rad.0.cos();
+        let forward_y = pitch_rad.0.sin();
+        let forward_z = yaw_rad.0.sin() * pitch_rad.0.cos();
+        
+        let forward = cgmath::Vector3::new(forward_x, forward_y, forward_z).normalize();
+        let target_position = initial_position + forward;
+        camera.set_target(target_position);
+
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            ],
+            label: Some("camera_bind_group_layout"),
+        });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("camera_bind_group"),
+        });
+
+        Self {
+            camera,
+            camera_controller,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            camera_bind_group_layout,
+        }
+    }
+
+    /// Update camera aspect ratio when window is resized
+    pub fn update_aspect(&mut self, width: u32, height: u32) {
+        self.camera.update_aspect(width, height);
+    }
+
+    /// Update camera controller and uniform data
+    pub fn update(&mut self, queue: &wgpu::Queue) {
+        // Update camera based on controller input
+        self.camera_controller.update_camera(&mut self.camera);
+        
+        // Update camera uniform with new view-projection matrix
+        self.camera_uniform.update_view_proj(&self.camera);
+        
+        // Write updated uniform data to GPU buffer
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
+
+    /// Process window events for camera input
+    pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+        self.camera_controller.process_events(event)
+    }
+
+    /// Calculate the center of all instances for camera positioning
+    /// This method helps position the camera to look at the center of all rendered objects
+    pub fn calculate_instances_center(&self, instances: &[Instance]) -> cgmath::Point3<f32> {
+        if instances.is_empty() {
+            // If no instances, return origin
+            return cgmath::Point3::new(0.0, 0.0, 0.0);
         }
 
-        //console::log_1(&format!("Camera position after: {:?}", camera.eye).into());
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut min_z = f32::INFINITY;
+        let mut max_z = f32::NEG_INFINITY;
+
+        // Find the bounding box of all instances
+        //Note that if there 
+        for instance in instances {
+            min_x = min_x.min(instance.position.x);
+            max_x = max_x.max(instance.position.x);
+            min_y = min_y.min(instance.position.y);
+            max_y = max_y.max(instance.position.y);
+            min_z = min_z.min(instance.position.z);
+            max_z = max_z.max(instance.position.z);
+        }
+
+        // Calculate center (ignore z for camera positioning as requested)
+        let center_x = (min_x + max_x) / 2.0;
+        let center_y = (min_y + max_y) / 2.0;
+        let center_z = 10.0; // Set to ground level as requested
+
+        cgmath::Point3::new(center_x, center_y, center_z)
     }
+
+    /// Position camera to look at the center of all instances
+    /// This automatically calculates the optimal camera position based on instance distribution
+    pub fn position_camera_at_instances_center(&mut self, instances: &[Instance], queue: &wgpu::Queue) {
+        let center = self.calculate_instances_center(instances);
+        
+        // Calculate the largest magnitude for x,y to determine camera distance
+        let max_magnitude = instances.iter()
+            .map(|instance| {
+                let dx = (instance.position.x - center.x).abs();
+                let dy = (instance.position.y - center.y).abs();
+                dx.max(dy)
+            })
+            .fold(0.0, f32::max);
+
+        // Set camera position: offset from center with appropriate height
+        let camera_distance = (max_magnitude * 3.0).max(5.0); // At least 5 units away
+        let camera_height = 3.0; // Fixed height above ground
+        
+        self.camera.set_eye(cgmath::Point3::new(
+            center.x,
+            center.y + camera_height,
+            center.z + camera_distance
+        ));
+        
+        // Set target to the center
+        self.camera.set_target(center);
+        
+        // Update camera uniform and GPU buffer
+        self.camera_uniform.update_view_proj(&self.camera);
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
+
+    /// Reset camera to default position and update GPU buffer
+    pub fn reset(&mut self, queue: &wgpu::Queue) {
+        #[cfg(target_arch = "wasm32")]
+        console::log_1(&"RESETTING CAMERA".into());
+        
+        self.camera.reset();
+        self.camera_uniform.update_view_proj(&self.camera);
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
+
+    /// Get reference to camera bind group layout for pipeline creation
+    pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.camera_bind_group_layout
+    }
+
+    /// Get reference to camera bind group for rendering
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.camera_bind_group
+    }
+}
+
+/// Instance struct to hold position and rotation data for camera calculations
+/// This is moved here from renderer.rs since it's used by camera positioning logic
+pub struct Instance {
+    pub position: cgmath::Vector3<f32>,
+    pub rotation: cgmath::Quaternion<f32>,
 } 
