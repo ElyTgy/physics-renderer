@@ -102,6 +102,70 @@ pub struct State {
 }
 
 impl State {
+    // Add this method to calculate the center of all instances
+    fn calculate_instances_center(&self) -> cgmath::Point3<f32> {
+        if self.instances.is_empty() {
+            // If no instances, return origin
+            return cgmath::Point3::new(0.0, 0.0, 0.0);
+        }
+
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut min_z = f32::INFINITY;
+        let mut max_z = f32::NEG_INFINITY;
+
+        // Find the bounding box of all instances
+        //Note that if there 
+        for instance in &self.instances {
+            min_x = min_x.min(instance.position.x);
+            max_x = max_x.max(instance.position.x);
+            min_y = min_y.min(instance.position.y);
+            max_y = max_y.max(instance.position.y);
+            min_z = min_z.min(instance.position.z);
+            max_z = max_z.max(instance.position.z);
+        }
+
+        // Calculate center (ignore z for camera positioning as requested)
+        let center_x = (min_x + max_x) / 2.0;
+        let center_y = (min_y + max_y) / 2.0;
+        let center_z = 10.0; // Set to ground level as requested
+
+        cgmath::Point3::new(center_x, center_y, center_z)
+    }
+
+    // Add this method to position camera looking at instances center
+    fn position_camera_at_instances_center(&mut self) {
+        let center = self.calculate_instances_center();
+        
+        // Calculate the largest magnitude for x,y to determine camera distance
+        let max_magnitude = self.instances.iter()
+            .map(|instance| {
+                let dx = (instance.position.x - center.x).abs();
+                let dy = (instance.position.y - center.y).abs();
+                dx.max(dy)
+            })
+            .fold(0.0, f32::max);
+
+        // Set camera position: offset from center with appropriate height
+        let camera_distance = (max_magnitude * 3.0).max(5.0); // At least 5 units away
+        let camera_height = 3.0; // Fixed height above ground
+        
+        self.camera.set_eye(cgmath::Point3::new(
+            center.x,
+            center.y + camera_height,
+            center.z + camera_distance
+        ));
+        
+        // Set target to the center
+        self.camera.set_target(center);
+        
+        // Update camera uniform
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
+
     pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let size = window.inner_size();
 
@@ -371,7 +435,7 @@ impl State {
             for x in 0..2 {
                 let position = cgmath::Vector3::new(
                     x as f32 * 2.0 - 4.0,
-                    35.0, // Start above ground
+                    10.0, // Start above ground
                     z as f32 * 2.0 - 4.0
                 );
                 let handle = physics_world.add_cube(position, 1.0);
@@ -382,7 +446,8 @@ impl State {
         // Configure the surface initially
         surface.configure(&device, &config);
 
-        Ok(Self {
+        // Create the state
+        let mut state = Self {
             surface,
             device,
             queue,
@@ -403,7 +468,15 @@ impl State {
             window,
             physics_world,
             physics_bodies,
-        })
+        };
+
+        // Update instances from physics bodies to get initial positions
+        state.update_instances_from_physics();
+        
+        // Position camera to look at the center of all instances
+        state.position_camera_at_instances_center();
+
+        Ok(state)
     }
 
     pub fn handle_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
@@ -529,9 +602,11 @@ impl State {
 
     // Add this method to State
     fn reset_camera(&mut self) {
-        self.camera.reset();
-        self.camera_uniform.update_view_proj(&self.camera);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        // Update instances first to get current positions
+        self.update_instances_from_physics();
+        
+        // Position camera to look at the center of all instances
+        self.position_camera_at_instances_center();
     }
 
     fn update_instances_from_physics(&mut self) {
