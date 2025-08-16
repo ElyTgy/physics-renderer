@@ -92,6 +92,10 @@ impl Camera {
     pub fn set_eye(&mut self, eye: cgmath::Point3<f32>) {
         self.eye = eye;
     }
+
+    pub fn set_target(&mut self, target: cgmath::Point3<f32>) {
+        self.target = target;
+    }
 }
 
 // We need this for Rust to store our data correctly for the shaders

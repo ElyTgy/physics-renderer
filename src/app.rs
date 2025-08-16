@@ -3,6 +3,9 @@ use winit::{
     application::ApplicationHandler, event::*, event_loop::ActiveEventLoop, keyboard::PhysicalKey, window::Window
 };
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::UnwrapThrowExt;
+
 use crate::renderer::State;
 
 pub struct App {
@@ -79,6 +82,8 @@ impl ApplicationHandler<State> for App {
                 event.window.inner_size().width,
                 event.window.inner_size().height,
             );
+            
+
         }
         self.state = Some(event);
     }

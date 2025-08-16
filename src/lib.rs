@@ -2,6 +2,11 @@ mod camera;
 mod geometry;
 mod renderer;
 mod app;
+mod texture;
+mod model;
+mod resources;
+mod physics;
+
 
 use winit::event_loop::EventLoop;
 
@@ -39,3 +44,5 @@ pub fn run_web() -> Result<(), wasm_bindgen::JsValue> {
 
     Ok(())
 }
+
+
